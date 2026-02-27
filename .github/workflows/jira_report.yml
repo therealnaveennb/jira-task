@@ -1,0 +1,37 @@
+name: Weekly Jira Report
+
+on:
+  schedule:
+    # 07:00 UTC is 12:30 PM IST.
+    - cron: '0 7 * * 5'
+  workflow_dispatch: # This allows you to run it manually for testing
+
+jobs:
+  run-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install requests boto3
+
+      - name: Run Jira Script
+        env:
+          # These come from your GitHub Repository Secrets
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: "ap-south-1" # Set your SES region here
+          JIRA_DOMAIN: "mitsogo"
+          BOARD_ID: "21"
+          PROJECT_KEY: "DevOps"
+        run: python jira_report.py
