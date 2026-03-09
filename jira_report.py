@@ -73,75 +73,88 @@ def build_report_string(sprint_name, total_issues, grouped_issues, reporting_sta
             report += f"\nStatus: {status} (0 Issues)\n"
     return report
 
-def send_email(subject, body):
-    client = boto3.client('ses', region_name=AWS_REGION)
-    try:
-        client.send_email(
-            Source=SENDER,
-            Destination={'ToAddresses': [RECIPIENT]},
-            Message={
-                'Subject': {'Data': subject},
-                'Body': {'Text': {'Data': body}}
-            }
-        )
-        print("Email sent successfully!")
-    except ClientError as e:
-        print(f"SES Error: {e.response['Error']['Message']}")
-
-def main():
-    auth = HTTPBasicAuth(EMAIL, TOKEN)
-    headers = {"Accept": "application/json"}
+def run_report_for_profile(config_section):
+    """Executes the reporting logic for a specific profile."""
+    # Extract values from the config section
+    domain = config_section.get('jira_domain')
+    email = config_section.get('jira_email')
+    token = config_section.get('jira_api_token')
+    board_id = config_section.get('board_id')
+    project_key = config_section.get('project_key')
+    aws_region = config_section.get('aws_region')
+    sender = config_section.get('sender_email')
+    recipient = config_section.get('recipient_email')
     
+    reporting_statuses = ["TO DO", "IN-PROGRESS", "ON HOLD", "READY FOR REVIEW", "REVIEW COMPLETED", "DONE"]
+    auth = HTTPBasicAuth(email, token)
+    headers = {"Accept": "application/json"}
+
     # 1. Get Active Sprint
-    sprint_id, sprint_name = get_active_sprint(DOMAIN, BOARD_ID, EMAIL, TOKEN)
+    sprint_id, sprint_name = get_active_sprint(domain, board_id, email, token)
     if not sprint_id:
-        print("No active sprint found.")
+        print(f"[{email}] No active sprint found.")
         return
 
-    # 2. Fetch Issues
-    jql = f'project = {PROJECT_KEY} AND sprint = {sprint_id} AND assignee = currentUser()'
-    search_url = f"https://{DOMAIN}.atlassian.net/rest/api/3/search/jql" 
+    # 2. Fetch Issues assigned to the current email
+    jql = f'project = {project_key} AND sprint = {sprint_id} AND assignee = "{email}"'
+    search_url = f"https://{domain}.atlassian.net/rest/api/3/search" 
     params = {"jql": jql, "fields": "summary,status"}
 
-    response = requests.get(search_url, headers=headers, auth=auth, params=params, verify=False)
-    print(response.text)
-    issues = response.json().get("issues", [])
+    res = requests.get(search_url, headers=headers, auth=auth, params=params, verify=False)
+    issues = res.json().get("issues", [])
     
     grouped_issues = defaultdict(list)
-    total_issues = 0
-
-    # 3. Process Issues and fetch last comments
     for issue in issues:
-        total_issues += 1
         status_name = issue["fields"]["status"]["name"]
-        
         issue_data = {
             "key": issue["key"],
             "title": issue["fields"]["summary"],
-            "url": f"https://{DOMAIN}.atlassian.net/browse/{issue['key']}"
+            "url": f"https://{domain}.atlassian.net/browse/{issue['key']}"
         }
         
-        # Fetch individual comments for ADF parsing
-        c_url = f"https://{DOMAIN}.atlassian.net/rest/api/3/issue/{issue['key']}/comment"
+        # Fetch last comment
+        c_url = f"https://{domain}.atlassian.net/rest/api/3/issue/{issue['key']}/comment"
         c_res = requests.get(c_url, headers=headers, auth=auth, verify=False)
-        
         if c_res.status_code == 200:
             comments = c_res.json().get("comments", [])
-            if comments:
-                issue_data["last_comment"] = extract_adf_text(comments[-1]["body"])
-            else:
-                issue_data["last_comment"] = ["No comments"]
+            issue_data["last_comment"] = extract_adf_text(comments[-1]["body"]) if comments else ["No comments"]
         else:
             issue_data["last_comment"] = ["Failed to fetch comments"]
 
         grouped_issues[status_name].append(issue_data)
 
-    # 4. Generate the report string
-    final_report = build_report_string(sprint_name, total_issues, grouped_issues, MY_REPORTING_STATUSES)
+    # 3. Build & Send
+    final_report = build_report_string(sprint_name, len(issues), grouped_issues, reporting_statuses)
     
-    # 5. Print to console (formatted) and send email
-    print(final_report)
-    send_email(f"Weekly Jira Report: {sprint_name}", final_report)
+    # We pass the AWS details to the existing send_email logic
+    send_ses_email(aws_region, sender, recipient, f"Weekly Jira Report: {sprint_name}", final_report)
+
+def send_ses_email(region, sender, recipient, subject, body):
+    client = boto3.client('ses', region_name=region)
+    try:
+        client.send_email(
+            Source=sender,
+            Destination={'ToAddresses': [recipient]},
+            Message={
+                'Subject': {'Data': subject},
+                'Body': {'Text': {'Data': body}}
+            }
+        )
+        print(f"Email sent successfully to {recipient}")
+    except ClientError as e:
+        print(f"Error sending to {recipient}: {e}")
+
+def main():
+    config = configparser.ConfigParser()
+    config.read('credentials.ini')
+
+    # Iterate through all sections except DEFAULT
+    for profile in config.sections():
+        print(f"--- Processing Profile: {profile} ---")
+        try:
+            run_report_for_profile(config[profile])
+        except Exception as e:
+            print(f"Failed to process {profile}: {e}")
 
 if __name__ == "__main__":
     main()
