@@ -97,7 +97,7 @@ def run_report_for_profile(config_section):
         return
 
     # 2. Fetch Issues assigned to the current email
-    jql = f'project = {project_key} AND sprint = {sprint_id} AND assignee = "{email}"'
+    jql = f'project = {project_key} AND sprint = {sprint_id} AND assignee = currentUser()'
     search_url = f"https://{domain}.atlassian.net/rest/api/3/search" 
     params = {"jql": jql, "fields": "summary,status"}
 
