@@ -4,6 +4,12 @@ from jinja2 import Template
 
 # Load data from environment
 user_data = json.loads(os.environ.get('USER_DATA_JSON', '[]'))
+webhook_url = os.environ.get('TEAMS_WEBHOOK_URL')
+
+if webhook_url:
+    print(f"Webhook URL detected. Length: {len(webhook_url)} characters.")
+else:
+    print("WARNING: TEAMS_WEBHOOK_URL is missing or empty!")
 
 template_str = """[DEFAULT]
 jira_domain = {{ jira_domain }}
@@ -29,7 +35,7 @@ rendered_config = template.render(
     aws_region="ap-south-1",
     sender_email=os.environ.get('SENDER_EMAIL'),
     users=user_data,
-    teams_webhook_url=os.environ.get('TEAMS_WEBHOOK_URL')
+    teams_webhook_url=webhook_url
 )
 
 with open("credentials.ini", "w") as f:
