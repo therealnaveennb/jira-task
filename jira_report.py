@@ -1,26 +1,14 @@
 import requests
 from requests.auth import HTTPBasicAuth
-import os
-import re
 import boto3
 import urllib3
 import configparser
 from collections import defaultdict
 from botocore.exceptions import ClientError
+import json
 
+# Suppress warnings for verify=False
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# --- CONFIGURATION (Ensure these are in your Environment Variables) ---
-DOMAIN = os.environ.get('JIRA_DOMAIN')
-EMAIL = os.environ.get('JIRA_EMAIL')
-TOKEN = os.environ.get('JIRA_API_TOKEN')
-BOARD_ID = os.environ.get('BOARD_ID')
-PROJECT_KEY = os.environ.get('PROJECT_KEY')
-AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
-SENDER = os.environ.get('SENDER_EMAIL')
-RECIPIENT = os.environ.get('RECIPIENT_EMAIL')
-
-MY_REPORTING_STATUSES = ["TO DO", "IN-PROGRESS", "ON HOLD", "READY FOR REVIEW", "REVIEW COMPLETED", "DONE"]
 
 def extract_adf_text(node):
     text_parts = []
@@ -40,97 +28,29 @@ def get_active_sprint(domain, board_id, email, api_token):
     auth = HTTPBasicAuth(email, api_token)
     url = f"https://{domain}.atlassian.net/rest/agile/1.0/board/{board_id}/sprint?state=active"
     try:
-        response = requests.get(url, auth=auth, verify=False)
+        response = requests.get(url, auth=auth, verify=False, timeout=10)
         sprints = response.json().get("values", [])
         return (sprints[0]['id'], sprints[0]['name']) if sprints else (None, None)
-    except:
+    except Exception as e:
+        print(f"Sprint Fetch Error: {e}")
         return None, None
 
-def build_report_string(sprint_name, total_issues, grouped_issues, reporting_statuses):
-    """Builds the plain-text report matching your printed format for the email body."""
-    report = f"{sprint_name} ({total_issues} Issues)\n"
+def build_report_string(sprint_name, total_issues, grouped_issues, reporting_statuses, user_name):
+    report = f"User: {user_name} | {sprint_name} ({total_issues} Issues)\n"
     report += "=" * 40 + "\n"
-
     for status in reporting_statuses:
-        issues_in_status = grouped_issues.get(status)
-        if not issues_in_status:
-            matched_key = next((k for k in grouped_issues if k.lower() == status.lower()), None)
-            issues_in_status = grouped_issues.get(matched_key)
-
-        if issues_in_status:
-            report += f"\nStatus: {status} ({len(issues_in_status)} Issues)\n"
-            for issue in issues_in_status:
-                report += f"{issue['key']} | Issue Title: {issue['title']}\n"
-                report += f"URL: {issue['url']}\n"
-                
-                comment_lines = issue.get('last_comment', [])
-                if isinstance(comment_lines, list):
-                    for line in comment_lines:
-                        report += f"  {line.strip()}\n"
-                else:
-                    report += f"  {comment_lines}\n"
-                report += "\n"
-        else:
-            report += f"\nStatus: {status} (0 Issues)\n"
+        issues_in_status = grouped_issues.get(status, [])
+        report += f"\nStatus: {status} ({len(issues_in_status)} Issues)\n"
+        for issue in issues_in_status:
+            report += f"{issue['key']} | {issue['title']}\n"
+            report += f"URL: {issue['url']}\n"
+            report += f"  Last Comment: {' '.join(issue.get('last_comment', ['No comment']))}\n"
     return report
 
-def run_report_for_profile(config_section):
-    """Executes the reporting logic for a specific profile."""
-    # Extract values from the config section
-    domain = config_section.get('jira_domain')
-    email = config_section.get('jira_email')
-    token = config_section.get('jira_api_token')
-    board_id = config_section.get('board_id')
-    project_key = config_section.get('project_key')
-    aws_region = config_section.get('aws_region')
-    sender = config_section.get('sender_email')
-    recipient = config_section.get('recipient_email')
-    
-    reporting_statuses = ["TO DO", "IN-PROGRESS", "ON HOLD", "READY FOR REVIEW", "REVIEW COMPLETED", "DONE"]
-    auth = HTTPBasicAuth(email, token)
-    headers = {"Accept": "application/json"}
-
-    # 1. Get Active Sprint
-    sprint_id, sprint_name = get_active_sprint(domain, board_id, email, token)
-    if not sprint_id:
-        print(f"[{email}] No active sprint found.")
-        return
-
-    # 2. Fetch Issues assigned to the current email
-    jql = f'project = {project_key} AND sprint = {sprint_id} AND assignee = currentUser()'
-    search_url = f"https://{domain}.atlassian.net/rest/api/3/search" 
-    params = {"jql": jql, "fields": "summary,status"}
-
-    res = requests.get(search_url, headers=headers, auth=auth, params=params, verify=False)
-    issues = res.json().get("issues", [])
-    
-    grouped_issues = defaultdict(list)
-    for issue in issues:
-        status_name = issue["fields"]["status"]["name"]
-        issue_data = {
-            "key": issue["key"],
-            "title": issue["fields"]["summary"],
-            "url": f"https://{domain}.atlassian.net/browse/{issue['key']}"
-        }
-        
-        # Fetch last comment
-        c_url = f"https://{domain}.atlassian.net/rest/api/3/issue/{issue['key']}/comment"
-        c_res = requests.get(c_url, headers=headers, auth=auth, verify=False)
-        if c_res.status_code == 200:
-            comments = c_res.json().get("comments", [])
-            issue_data["last_comment"] = extract_adf_text(comments[-1]["body"]) if comments else ["No comments"]
-        else:
-            issue_data["last_comment"] = ["Failed to fetch comments"]
-
-        grouped_issues[status_name].append(issue_data)
-
-    # 3. Build & Send
-    final_report = build_report_string(sprint_name, len(issues), grouped_issues, reporting_statuses)
-    
-    # We pass the AWS details to the existing send_email logic
-    send_ses_email(aws_region, sender, recipient, f"Weekly Jira Report: {sprint_name}", final_report)
-
 def send_ses_email(region, sender, recipient, subject, body):
+    if not sender or sender == "None":
+        print(f"Skipping Email: No sender_email configured for {recipient}")
+        return
     client = boto3.client('ses', region_name=region)
     try:
         client.send_email(
@@ -143,19 +63,113 @@ def send_ses_email(region, sender, recipient, subject, body):
         )
         print(f"Email sent successfully to {recipient}")
     except ClientError as e:
-        print(f"Error sending to {recipient}: {e}")
+        print(f"SES Error for {recipient}: {e}")
+
+def send_teams_message(webhook_url, text, title="Jira Report"):
+    # Adaptive Card format often works better with Power Automate 202 responses
+    payload = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "type": "AdaptiveCard",
+                "body": [
+                    {"type": "TextBlock", "text": title, "weight": "Bolder", "size": "Medium"},
+                    {"type": "TextBlock", "text": text, "wrap": True}
+                ],
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "version": "1.0"
+            }
+        }]
+    }
+    try:
+        print("here")
+        response = requests.post(webhook_url, json=payload, verify=False, timeout=10)
+        # Treat 200 and 202 as success
+        if response.status_code in [200, 202]:
+            print(f"Teams notification success ({response.status_code})")
+        else:
+            print(f"Teams error: {response.status_code} - {response.text}")
+    except Exception as e:
+        print(f"Teams Request Failed: {e}")
+
+def run_report_for_profile(profile_name, config_section):
+    domain = config_section.get('jira_domain')
+    email = config_section.get('jira_email')
+    token = config_section.get('jira_api_token')
+    board_id = config_section.get('board_id')
+    project_key = config_section.get('project_key')
+    region = config_section.get('aws_region')
+    sender = config_section.get('sender_email')
+    recipient = config_section.get('recipient_email')
+    print("inga")
+    webhook = config_section.get('TEAMS_WEBHOOK_URL')
+    reporting_statuses = ["TO DO", "IN-PROGRESS", "ON HOLD", "READY FOR REVIEW", "REVIEW COMPLETED", "DONE"]
+    auth = HTTPBasicAuth(email, token)
+    headers = {"Accept": "application/json"}
+
+    # 1. Sprint
+    sprint_id, sprint_name = get_active_sprint(domain, board_id, email, token)
+    if not sprint_id:
+        print(f"[{profile_name}] No active sprint.")
+        return
+
+    # 2. Issues (Corrected JQL and endpoint)
+    # Wrap project_key and email in quotes for JQL safety
+    jql = f'project = "{project_key}" AND sprint = {sprint_id} AND assignee = "{email}"'
+    search_url = f"https://{domain}.atlassian.net/rest/api/3/search/jql" 
+    params = {"jql": jql, "fields": "summary,status"}
+
+    res = requests.get(search_url, headers=headers, auth=auth, params=params, verify=False)
+    if res.status_code != 200:
+        print(f"Jira Search Failed: {res.status_code} - {res.text}")
+        return
+        
+    issues = res.json().get("issues", [])
+    grouped_issues = defaultdict(list)
+
+    for issue in issues:
+        status_name = issue["fields"]["status"]["name"].upper()
+        issue_data = {
+            "key": issue["key"],
+            "title": issue["fields"]["summary"],
+            "url": f"https://{domain}.atlassian.net/browse/{issue['key']}"
+        }
+        
+        # Comments
+        c_url = f"https://{domain}.atlassian.net/rest/api/3/issue/{issue['key']}/comment"
+        c_res = requests.get(c_url, headers=headers, auth=auth, verify=False)
+        if c_res.status_code == 200:
+            comments = c_res.json().get("comments", [])
+            issue_data["last_comment"] = extract_adf_text(comments[-1]["body"]) if comments else ["No comments"]
+        else:
+            issue_data["last_comment"] = ["N/A"]
+
+        grouped_issues[status_name].append(issue_data)
+
+    # 3. Report & Send
+    report = build_report_string(sprint_name, len(issues), grouped_issues, reporting_statuses, profile_name)
+    print(report)
+    
+    send_ses_email(region, sender, recipient, f"Report: {profile_name} - {sprint_name}", report)
+    send_teams_message(webhook, report, title=f"Jira Report: {profile_name}")
 
 def main():
-    config = configparser.ConfigParser()
+    config = configparser.ConfigParser(interpolation=None)
     config.read('credentials.ini')
 
     # Iterate through all sections except DEFAULT
-    for profile in config.sections():
-        print(f"--- Processing Profile: {profile} ---")
+    profiles = config.sections()
+    if not profiles:
+        print("No user profiles found in credentials.ini")
+        return
+
+    for profile in profiles:
+        print(f"\n{'='*20}\nProcessing: {profile}\n{'='*20}")
         try:
-            run_report_for_profile(config[profile])
+            run_report_for_profile(profile, config[profile])
         except Exception as e:
-            print(f"Failed to process {profile}: {e}")
+            print(f"Error processing profile {profile}: {e}")
 
 if __name__ == "__main__":
     main()
