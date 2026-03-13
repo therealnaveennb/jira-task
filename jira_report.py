@@ -155,7 +155,7 @@ def run_report_for_profile(profile_name, config_section):
     send_teams_message(webhook, report, title=f"Jira Report: {profile_name}")
 
 def main():
-    config = configparser.ConfigParser(interpolation=None)
+    config = configparser.ConfigParser(interpolation=None, comment_prefixes=('#',))
     config.read('credentials.ini')
 
     # Iterate through all sections except DEFAULT
