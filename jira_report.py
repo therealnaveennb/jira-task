@@ -83,7 +83,7 @@ def send_teams_message(webhook_url, text, title="Jira Report"):
         }]
     }
     try:
-        print("here")
+
         response = requests.post(webhook_url, json=payload, verify=False, timeout=10)
         # Treat 200 and 202 as success
         if response.status_code in [200, 202]:
@@ -102,8 +102,8 @@ def run_report_for_profile(profile_name, config_section):
     region = config_section.get('aws_region')
     sender = config_section.get('sender_email')
     recipient = config_section.get('recipient_email')
-    print("inga")
-    webhook = config_section.get('TEAMS_WEBHOOK_URL')
+
+    webhook = config_section.get('teams_webhook_url')
     reporting_statuses = ["TO DO", "IN-PROGRESS", "ON HOLD", "READY FOR REVIEW", "REVIEW COMPLETED", "DONE"]
     auth = HTTPBasicAuth(email, token)
     headers = {"Accept": "application/json"}
