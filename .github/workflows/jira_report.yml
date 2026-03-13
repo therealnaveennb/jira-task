@@ -24,7 +24,7 @@ jobs:
         env:
           USER_DATA_JSON: ${{ secrets.USER_DATA_JSON }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
-          TEAMS_WORKFLOW_URL: ${{ secrets.TEAMS_WORKFLOW_URL }}
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: python generate_config.py
 
       - name: Run Jira Script
